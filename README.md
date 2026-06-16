@@ -2,6 +2,15 @@
 
 A driver-agnostic interface to the PostgreSQL [libpq][libpq] API.
 
+## Ecosystem
+
+| Package | Description |
+|---------|-------------|
+| **[pqi](https://github.com/nikita-volkov/pqi)** *(this)* | The interface: `IsConnection` class, shared types, and connection-independent helpers |
+| [pqi-ffi](https://github.com/nikita-volkov/pqi-ffi) | FFI adapter backed by `postgresql-libpq` and the C `libpq` library. Battle-tested, production-safe |
+| [pqi-native](https://github.com/nikita-volkov/pqi-native) | Pure-Haskell adapter speaking the PostgreSQL wire protocol directly. No C dependency. Experimental |
+| [pqi-conformance](https://github.com/nikita-volkov/pqi-conformance) | Reusable `hspec` conformance suite that differentially tests any adapter against `postgresql-libpq` |
+
 ## Motivation
 
 Every major Haskell PostgreSQL driver today depends on
