@@ -116,11 +116,10 @@ test-suite pqi-test
   type: exitcode-stdio-1.0
   hs-source-dirs: src/test
   main-is: Spec.hs
-
   build-depends:
     base >=4.11 && <5,
     bytestring >=0.10 && <0.13,
     hspec >=2.11 && <2.12,
-    pqi,
     postgresql-libpq >=0.11 && <0.12,
+    pqi,
     QuickCheck >=2.14 && <3,
