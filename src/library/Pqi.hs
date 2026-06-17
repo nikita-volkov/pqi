@@ -1,30 +1,33 @@
--- | A driver-agnostic reproduction of the @postgresql-libpq@ API (version
+-- | A driver-agnostic reproduction of the ["postgresql-libpq"](https://hackage.haskell.org/package/postgresql-libpq) API (version
 -- @0.11@, the pipelining-capable release).
 --
--- The connection is reified as a single class 'IsConnection c' parameterised
+-- The connection is reified as a single class @'IsConnection' c@ parameterised
 -- over the connection type. Result accessors live in the independent
--- 'IsResult r' class, and cancellation handles in 'IsCancel k'.
--- 'IsResult (ResultOf c)' and 'IsCancel (CancelOf c)' are superclass
--- constraints of 'IsConnection c', so callers who have access to a connection
--- get result inspection and cancellation for free.
+-- @'IsResult' r@ class, and cancellation handles in @'IsCancel' k@.
+-- @'IsResult' ('ResultOf' c)@ and @'IsCancel' ('CancelOf' c)@ are superclass
+-- constraints of @'IsConnection' c@, so callers who have access to a connection
+-- get result inspection and cancellation automatically.
 --
--- Function names, argument order, and semantics mirror
--- "Database.PostgreSQL.LibPQ"; the only deliberate departures are:
+-- Function names, argument order, and semantics mirror the API of the C library binding
+-- @postgresql-libpq@.
+-- The only deliberate departures are:
 --
 -- * @Connection@, @Result@, and @Cancel@ become the class parameter @c@ and the
 --   associated types @'ResultOf' c@ \/ @'CancelOf' c@.
 --
--- * OIDs are a plain 'Word32' ('Word32') and row\/column\/parameter indices are a
+-- * OIDs are a plain 'Word32' and row\/column\/parameter indices are a
 --   plain 'Int32', rather than the C-specific newtypes of the original.
 --
 -- * Ambiguous, rarely-useful helpers (e.g. @resStatus@) are omitted, and the
 --   inherently libpq-specific @libpqVersion@ lives in the FFI adapter instead
 --   of this driver-agnostic interface.
+--
+-- * The 'unescapeBytea' helper is bundled in this library and implemented natively without IO.
 module Pqi
   ( -- * Type classes
+    IsConnection (..),
     IsResult (..),
     IsCancel (..),
-    IsConnection (..),
 
     -- * Shared types
     Format (..),
@@ -90,17 +93,17 @@ data ExecStatus
     NonfatalError
   | -- | A fatal error occurred.
     FatalError
-  | -- | The 'ResultOf' contains a single result tuple from the current command.
+  | -- | The @'ResultOf'@ contains a single result tuple from the current command.
     -- This status occurs only when single-row mode has been selected for the
     -- query.
     SingleTuple
-  | -- | The 'ResultOf' represents a synchronization point in pipeline mode,
-    -- requested by 'pipelineSync'. This status occurs only in pipeline mode.
+  | -- | The @'ResultOf'@ represents a synchronization point in pipeline mode,
+    -- requested by @'pipelineSync'@. This status occurs only in pipeline mode.
     PipelineSync
-  | -- | The 'ResultOf' represents a pipeline that has received an error from
-    -- the server. 'getResult' must be called repeatedly, and each time it will
+  | -- | The @'ResultOf'@ represents a pipeline that has received an error from
+    -- the server. @'getResult'@ must be called repeatedly, and each time it will
     -- return this status code until the end of the current pipeline, at which
-    -- point it will return 'PipelineSync' and normal processing can resume.
+    -- point it will return @'PipelineSync'@ and normal processing can resume.
     PipelineAbort
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
@@ -270,8 +273,8 @@ class IsResult r where
   -- for variable size.
   fsize :: r -> Int32 -> IO Int
 
-  -- | Value at @(row, column)@, or 'Nothing' for SQL @NULL@. Delegates to
-  -- 'getvalue'' by default in case the adapter provides a copying variant.
+  -- | Value at @(row, column)@, or @'Nothing'@ for SQL @NULL@. Delegates to
+  -- @'getvalue''@ by default in case the adapter provides a copying variant.
   getvalue :: r -> Int32 -> Int32 -> IO (Maybe ByteString)
   getvalue = getvalue'
 
@@ -382,7 +385,7 @@ class (IsResult (ResultOf c), IsCancel (CancelOf c)) => IsConnection c where
 
   -- | The most recent error message, if any.
   --
-  -- Note: unlike the structured fields available via 'resultErrorField', the
+  -- Note: unlike the structured fields available via @'resultErrorField'@, the
   -- flat message text is formatted locally by the driver, so adapters are not
   -- expected to produce byte-identical strings.
   errorMessage :: c -> IO (Maybe ByteString)
@@ -404,8 +407,8 @@ class (IsResult (ResultOf c), IsCancel (CancelOf c)) => IsConnection c where
   exec :: c -> ByteString -> IO (Maybe (ResultOf c))
 
   -- | Submit a parameterized command. Each parameter is given as
-  -- @(type oid, value, format)@, or 'Nothing' for SQL @NULL@. The final
-  -- 'Format' selects the result format.
+  -- @(type oid, value, format)@, or @'Nothing'@ for SQL @NULL@. The final
+  -- @'Format'@ selects the result format.
   execParams ::
     c ->
     ByteString ->
@@ -414,11 +417,11 @@ class (IsResult (ResultOf c), IsCancel (CancelOf c)) => IsConnection c where
     IO (Maybe (ResultOf c))
 
   -- | Prepare a named statement. The OID list, when supplied, fixes parameter
-  -- types; 'Nothing' leaves them to be inferred.
+  -- types; @'Nothing'@ leaves them to be inferred.
   prepare :: c -> ByteString -> ByteString -> Maybe [Word32] -> IO (Maybe (ResultOf c))
 
   -- | Execute a previously prepared statement. Each parameter is
-  -- @(value, format)@, or 'Nothing' for SQL @NULL@.
+  -- @(value, format)@, or @'Nothing'@ for SQL @NULL@.
   execPrepared ::
     c ->
     ByteString ->
@@ -445,19 +448,19 @@ class (IsResult (ResultOf c), IsCancel (CancelOf c)) => IsConnection c where
   -- | Submit a command without waiting for the result.
   sendQuery :: c -> ByteString -> IO Bool
 
-  -- | Asynchronous 'execParams'.
+  -- | Asynchronous @'execParams'@.
   sendQueryParams :: c -> ByteString -> [Maybe (Word32, ByteString, Format)] -> Format -> IO Bool
 
-  -- | Asynchronous 'prepare'.
+  -- | Asynchronous @'prepare'@.
   sendPrepare :: c -> ByteString -> ByteString -> Maybe [Word32] -> IO Bool
 
-  -- | Asynchronous 'execPrepared'.
+  -- | Asynchronous @'execPrepared'@.
   sendQueryPrepared :: c -> ByteString -> [Maybe (ByteString, Format)] -> Format -> IO Bool
 
-  -- | Asynchronous 'describePrepared'.
+  -- | Asynchronous @'describePrepared'@.
   sendDescribePrepared :: c -> ByteString -> IO Bool
 
-  -- | Asynchronous 'describePortal'.
+  -- | Asynchronous @'describePortal'@.
   sendDescribePortal :: c -> ByteString -> IO Bool
 
   -- | Collect the next result from an asynchronous command.
@@ -466,7 +469,7 @@ class (IsResult (ResultOf c), IsCancel (CancelOf c)) => IsConnection c where
   -- | Read input from the server into the driver's buffer.
   consumeInput :: c -> IO Bool
 
-  -- | Whether a command is busy (a 'getResult' would block).
+  -- | Whether a command is busy (a @'getResult'@ would block).
   isBusy :: c -> IO Bool
 
   -- | Set the non-blocking flag of the connection.
@@ -502,10 +505,10 @@ class (IsResult (ResultOf c), IsCancel (CancelOf c)) => IsConnection c where
   -- | Return the next notification from the queue, if any.
   notifies :: c -> IO (Maybe Notify)
 
-  -- | Stop accumulating notices for retrieval via 'getNotice'.
+  -- | Stop accumulating notices for retrieval via @'getNotice'@.
   disableNoticeReporting :: c -> IO ()
 
-  -- | Start accumulating notices for retrieval via 'getNotice'.
+  -- | Start accumulating notices for retrieval via @'getNotice'@.
   enableNoticeReporting :: c -> IO ()
 
   -- | Retrieve the next accumulated notice, if any.
@@ -514,10 +517,10 @@ class (IsResult (ResultOf c), IsCancel (CancelOf c)) => IsConnection c where
   -- | Send data on a @COPY FROM STDIN@ connection.
   putCopyData :: c -> ByteString -> IO CopyInResult
 
-  -- | Signal the end of @COPY FROM STDIN@; 'Just' aborts with the given error.
+  -- | Signal the end of @COPY FROM STDIN@; @'Just'@ aborts with the given error.
   putCopyEnd :: c -> Maybe ByteString -> IO CopyInResult
 
-  -- | Receive data on a @COPY TO STDOUT@ connection. The 'Bool' selects
+  -- | Receive data on a @COPY TO STDOUT@ connection. The @'Bool'@ selects
   -- non-blocking mode.
   getCopyData :: c -> Bool -> IO CopyOutResult
 

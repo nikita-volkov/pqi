@@ -1,5 +1,8 @@
 # pqi
 
+[![Hackage](https://img.shields.io/hackage/v/pqi.svg)](https://hackage.haskell.org/package/pqi)
+[![Continuous Haddock](https://img.shields.io/badge/haddock-master-blue)](https://nikita-volkov.github.io/pqi/)
+
 A driver-agnostic interface to the PostgreSQL [libpq][libpq] API.
 
 ## Ecosystem
