@@ -1,4 +1,4 @@
--- | A driver-agnostic reproduction of the ["postgresql-libpq"](https://hackage.haskell.org/package/postgresql-libpq) API (version
+-- | A driver-agnostic reproduction of the [@postgresql-libpq@](https://hackage.haskell.org/package/postgresql-libpq) API (version
 -- @0.11@, the pipelining-capable release).
 --
 -- The connection is reified as a single class @'IsConnection' c@ parameterised
@@ -18,9 +18,10 @@
 -- * OIDs are a plain 'Word32' and row\/column\/parameter indices and LoFds are a
 --   plain 'Int32', rather than the C-specific newtypes of the original.
 --
--- * Ambiguous, rarely-useful helpers (e.g. @resStatus@) are omitted, and the
---   inherently libpq-specific @libpqVersion@ lives in the FFI adapter instead
---   of this driver-agnostic interface.
+-- * Ambiguous, rarely-useful helpers (e.g. @resStatus@) are omitted,
+--   @libpqVersion@ is omitted too.
+--
+-- * There's no @invalidOid@ constant. It's just 0.
 --
 -- * The 'unescapeBytea' helper is bundled in this library and implemented natively without IO.
 module Pqi
