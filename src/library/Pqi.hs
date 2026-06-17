@@ -15,7 +15,7 @@
 -- * @Connection@, @Result@, and @Cancel@ become the class parameter @c@ and the
 --   associated types @'ResultOf' c@ \/ @'CancelOf' c@.
 --
--- * OIDs are a plain 'Word32' and row\/column\/parameter indices are a
+-- * OIDs are a plain 'Word32' and row\/column\/parameter indices and LoFds are a
 --   plain 'Int32', rather than the C-specific newtypes of the original.
 --
 -- * Ambiguous, rarely-useful helpers (e.g. @resStatus@) are omitted, and the
@@ -41,7 +41,6 @@ module Pqi
     FlushStatus (..),
     CopyInResult (..),
     CopyOutResult (..),
-    LoFd (..),
     Notify (..),
 
     -- * Connection-independent helpers
@@ -205,10 +204,6 @@ data CopyOutResult
   | CopyOutWouldBlock
   | CopyOutDone
   | CopyOutError
-  deriving stock (Eq, Ord, Show)
-
--- | A large-object file descriptor, as returned by 'loOpen'.
-newtype LoFd = LoFd Int32
   deriving stock (Eq, Ord, Show)
 
 -- | An asynchronous notification, as returned by 'notifies'.
@@ -540,25 +535,25 @@ class (IsResult (ResultOf c), IsCancel (CancelOf c)) => IsConnection c where
   loExport :: c -> Word32 -> FilePath -> IO (Maybe ())
 
   -- | Open a large object.
-  loOpen :: c -> Word32 -> IOMode -> IO (Maybe LoFd)
+  loOpen :: c -> Word32 -> IOMode -> IO (Maybe Int32)
 
   -- | Write to an open large object.
-  loWrite :: c -> LoFd -> ByteString -> IO (Maybe Int)
+  loWrite :: c -> Int32 -> ByteString -> IO (Maybe Int)
 
   -- | Read from an open large object.
-  loRead :: c -> LoFd -> Int -> IO (Maybe ByteString)
+  loRead :: c -> Int32 -> Int -> IO (Maybe ByteString)
 
   -- | Seek within an open large object.
-  loSeek :: c -> LoFd -> SeekMode -> Int -> IO (Maybe Int)
+  loSeek :: c -> Int32 -> SeekMode -> Int -> IO (Maybe Int)
 
   -- | Report the current seek position of an open large object.
-  loTell :: c -> LoFd -> IO (Maybe Int)
+  loTell :: c -> Int32 -> IO (Maybe Int)
 
   -- | Truncate an open large object.
-  loTruncate :: c -> LoFd -> Int -> IO (Maybe ())
+  loTruncate :: c -> Int32 -> Int -> IO (Maybe ())
 
   -- | Close an open large object.
-  loClose :: c -> LoFd -> IO (Maybe ())
+  loClose :: c -> Int32 -> IO (Maybe ())
 
   -- | Remove a large object.
   loUnlink :: c -> Word32 -> IO (Maybe ())
