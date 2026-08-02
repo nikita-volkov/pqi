@@ -41,7 +41,8 @@
 --
 -- * There's no @invalidOid@ constant. It's just 0.
 --
--- * The 'unescapeBytea' helper is bundled in this library and implemented natively without IO.
+-- * @unescapeBytea@ is a field of 'Adapter' rather than a connection-independent
+--   top-level function, since its implementation is adapter-specific.
 module Pqi
   ( -- * Adapter
     Adapter (..),
@@ -68,9 +69,6 @@ module Pqi
     CopyInResult (..),
     CopyOutResult (..),
     Notify (..),
-
-    -- * Connection-independent helpers
-    unescapeBytea,
   )
 where
 
@@ -83,7 +81,6 @@ import Data.Maybe
 import Data.Ord
 import Data.Text (Text)
 import Data.Word
-import Pqi.UnescapeBytea (unescapeBytea)
 import System.IO (FilePath, IO, IOMode, SeekMode)
 import System.Posix.Types (Fd)
 import Text.Show
@@ -528,5 +525,8 @@ data Adapter = Adapter
     -- | Begin connecting to a database asynchronously, as @PQconnectStart@.
     connectStart :: ByteString -> IO Connection,
     -- | The null-sentinel connection, as @PQnewNullConnection@.
-    newNullConnection :: IO Connection
+    newNullConnection :: IO Connection,
+    -- | Convert the textual representation of a @bytea@ value, as produced
+    -- by the server, back into raw bytes, as @PQunescapeBytea@.
+    unescapeBytea :: ByteString -> IO (Maybe ByteString)
   }
