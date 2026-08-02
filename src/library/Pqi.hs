@@ -19,9 +19,12 @@
 -- Adapter packages (e.g. @pqi-ffi@, @pqi-native@) are responsible for
 -- constructing 'Connection' values — this package does not provide any
 -- @connectdb@\/@connectStart@\/@newNullConnection@-style constructors of
--- its own, since those don't have a connection to close over yet. Look for
--- top-level functions such as @connectdb :: ByteString -> IO Pqi.Connection@
--- in the adapter package you're using.
+-- its own, since those don't have a connection to close over yet. Instead,
+-- each adapter package exports a single top-level value of type 'Adapter',
+-- bundling its connection-establishing functions together so that callers
+-- who need to be adapter-agnostic (e.g. a differential test harness, or a
+-- consumer that lets its own users pick an adapter) can hold onto one value
+-- rather than a family of adapter-qualified functions.
 --
 -- Function names, argument order, and semantics mirror the API of the C library binding
 -- @postgresql-libpq@.
@@ -40,7 +43,10 @@
 --
 -- * The 'unescapeBytea' helper is bundled in this library and implemented natively without IO.
 module Pqi
-  ( -- * Connection
+  ( -- * Adapter
+    Adapter (..),
+
+    -- * Connection
     Connection (..),
 
     -- * Result inspection
@@ -75,6 +81,7 @@ import Data.Eq
 import Data.Int
 import Data.Maybe
 import Data.Ord
+import Data.Text (Text)
 import Data.Word
 import Pqi.UnescapeBytea (unescapeBytea)
 import System.IO (FilePath, IO, IOMode, SeekMode)
@@ -493,4 +500,33 @@ data Connection = Connection
     setClientEncoding :: ByteString -> IO Bool,
     -- | Set error verbosity, returning the previous setting.
     setErrorVerbosity :: Verbosity -> IO Verbosity
+  }
+
+-- * Adapter
+
+-- | An adapter package's connection-establishing functions, bundled into one
+-- value.
+--
+-- 'Connection', 'Result', and 'Cancel' are per-connection and per-result;
+-- they carry no information about which adapter produced them, so they
+-- cannot themselves stand in for "the FFI adapter" or "the native adapter"
+-- the way a driver-parameterised type could. 'Adapter' fills that gap: it is
+-- the one value that names an adapter and knows how to bring a 'Connection'
+-- into being, so a caller that must remain adapter-agnostic (a differential
+-- test harness comparing two adapters, or a library that lets its users pick
+-- an adapter at runtime) can hold onto a single 'Adapter' value instead of a
+-- family of adapter-qualified top-level functions.
+--
+-- Each adapter package (e.g. @pqi-ffi@, @pqi-native@) exports exactly one
+-- top-level value of this type, conventionally named @adapter@.
+data Adapter = Adapter
+  { -- | A short identifier for the adapter (e.g. @\"pqi-ffi\"@), for use in
+    -- test descriptions, logs, and error messages.
+    name :: Text,
+    -- | Connect to a database, as @PQconnectdb@.
+    connectdb :: ByteString -> IO Connection,
+    -- | Begin connecting to a database asynchronously, as @PQconnectStart@.
+    connectStart :: ByteString -> IO Connection,
+    -- | The null-sentinel connection, as @PQnewNullConnection@.
+    newNullConnection :: IO Connection
   }
