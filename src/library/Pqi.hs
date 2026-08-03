@@ -81,10 +81,10 @@ import Data.Maybe
 import Data.Ord
 import Data.Text (Text)
 import Data.Word
+import Prelude (Bounded, Enum)
 import System.IO (FilePath, IO, IOMode, SeekMode)
 import System.Posix.Types (Fd)
 import Text.Show
-import Prelude (Bounded, Enum)
 
 -- * Shared types
 
