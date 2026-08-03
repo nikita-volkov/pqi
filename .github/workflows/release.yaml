@@ -58,21 +58,17 @@ jobs:
           fi
 
   build:
-    needs:
-      - validate-version
-      - validate-changelog
     uses: ./.github/workflows/build.yaml
     secrets: inherit
 
   generate-docs:
-    needs:
-      - validate-version
-      - validate-changelog
     uses: nikita-volkov/haskell-hackage-lib-github-actions-workflows/.github/workflows/generate-docs.yaml@v4
     secrets: inherit
 
   release:
     needs:
+      - validate-version
+      - validate-changelog
       - build
       - generate-docs
     runs-on: ubuntu-latest
