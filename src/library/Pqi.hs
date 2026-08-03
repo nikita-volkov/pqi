@@ -1,19 +1,37 @@
 -- | A driver-agnostic reproduction of the [@postgresql-libpq@](https://hackage.haskell.org/package/postgresql-libpq) API (version
 -- @0.11@, the pipelining-capable release).
 --
--- The connection is reified as a single class @'IsConnection' c@ parameterised
--- over the connection type. Result accessors live in the independent
--- @'IsResult' r@ class, and cancellation handles in @'IsCancel' k@.
--- @'IsResult' ('ResultOf' c)@ and @'IsCancel' ('CancelOf' c)@ are superclass
--- constraints of @'IsConnection' c@, so callers who have access to a connection
--- get result inspection and cancellation automatically.
+-- The connection is reified as a single concrete record type, 'Connection',
+-- whose fields are the closures that implement each capability. Result
+-- accessors live in the independent 'Result' record, and cancellation
+-- handles in the 'Cancel' record. A 'Connection' produces 'Result's and
+-- 'Cancel's directly (via its 'exec', 'getResult', 'getCancel', etc.
+-- fields) — there is no type-level indirection: the whole package defines
+-- exactly one 'Connection', one 'Result', and one 'Cancel' type.
+--
+-- Each field of these records is a closure that has already captured
+-- whatever underlying handle (e.g. a C @PGconn@ pointer, or a native
+-- socket) it needs; from the caller's perspective a 'Connection' is simply
+-- a bundle of @IO@ actions. This trades the old class-based polymorphism
+-- for a concrete, monomorphic value that can be passed around, stored, and
+-- constructed by whichever adapter package is in use.
+--
+-- Adapter packages (e.g. @pqi-ffi@, @pqi-native@) are responsible for
+-- constructing 'Connection' values — this package does not provide any
+-- @connectdb@\/@connectStart@\/@newNullConnection@-style constructors of
+-- its own, since those don't have a connection to close over yet. Instead,
+-- each adapter package exports a single top-level value of type 'Adapter',
+-- bundling its connection-establishing functions together so that callers
+-- who need to be adapter-agnostic (e.g. a differential test harness, or a
+-- consumer that lets its own users pick an adapter) can hold onto one value
+-- rather than a family of adapter-qualified functions.
 --
 -- Function names, argument order, and semantics mirror the API of the C library binding
 -- @postgresql-libpq@.
 -- The only deliberate departures are:
 --
--- * @Connection@, @Result@, and @Cancel@ become the class parameter @c@ and the
---   associated types @'ResultOf' c@ \/ @'CancelOf' c@.
+-- * @Connection@, @Result@, and @Cancel@ are plain records of closures
+--   rather than a class-parameterised type and its associated types.
 --
 -- * OIDs are a plain 'Word32' and row\/column\/parameter indices and LoFds are a
 --   plain 'Int32', rather than the C-specific newtypes of the original.
@@ -23,12 +41,20 @@
 --
 -- * There's no @invalidOid@ constant. It's just 0.
 --
--- * The 'unescapeBytea' helper is bundled in this library and implemented natively without IO.
+-- * @unescapeBytea@ is a field of 'Adapter' rather than a connection-independent
+--   top-level function, since its implementation is adapter-specific.
 module Pqi
-  ( -- * Type classes
-    IsConnection (..),
-    IsResult (..),
-    IsCancel (..),
+  ( -- * Adapter
+    Adapter (..),
+
+    -- * Connection
+    Connection (..),
+
+    -- * Result inspection
+    Result (..),
+
+    -- * Cancellation
+    Cancel (..),
 
     -- * Shared types
     Format (..),
@@ -43,9 +69,6 @@ module Pqi
     CopyInResult (..),
     CopyOutResult (..),
     Notify (..),
-
-    -- * Connection-independent helpers
-    unescapeBytea,
   )
 where
 
@@ -54,11 +77,10 @@ import Data.ByteString (ByteString)
 import Data.Either
 import Data.Eq
 import Data.Int
-import Data.Kind (Type)
 import Data.Maybe
 import Data.Ord
+import Data.Text (Text)
 import Data.Word
-import Pqi.UnescapeBytea (unescapeBytea)
 import System.IO (FilePath, IO, IOMode, SeekMode)
 import System.Posix.Types (Fd)
 import Text.Show
@@ -93,14 +115,14 @@ data ExecStatus
     NonfatalError
   | -- | A fatal error occurred.
     FatalError
-  | -- | The @'ResultOf'@ contains a single result tuple from the current command.
+  | -- | The @'Result'@ contains a single result tuple from the current command.
     -- This status occurs only when single-row mode has been selected for the
     -- query.
     SingleTuple
-  | -- | The @'ResultOf'@ represents a synchronization point in pipeline mode,
+  | -- | The @'Result'@ represents a synchronization point in pipeline mode,
     -- requested by @'pipelineSync'@. This status occurs only in pipeline mode.
     PipelineSync
-  | -- | The @'ResultOf'@ represents a pipeline that has received an error from
+  | -- | The @'Result'@ represents a pipeline that has received an error from
     -- the server. @'getResult'@ must be called repeatedly, and each time it will
     -- return this status code until the end of the current pipeline, at which
     -- point it will return @'PipelineSync'@ and normal processing can resume.
@@ -217,353 +239,294 @@ data Notify = Notify
 
 -- * Result inspection
 
--- | Result-accessor methods, independent of the connection type that produced
+-- | Result-accessor closures, independent of the connection that produced
 -- the result. This allows row decoders and projection functions (such as
--- 'observeResult' in @pqi-conformance@) to operate on any result type
--- without knowing the originating connection.
-class IsResult r where
-  -- | The status of the result.
-  resultStatus :: r -> IO ExecStatus
-
-  -- | The flat error message associated with the result, if any. Best-effort;
-  -- see the note on 'errorMessage'.
-  resultErrorMessage :: r -> IO (Maybe ByteString)
-
-  -- | A single structured field of the result's error report.
-  resultErrorField :: r -> FieldCode -> IO (Maybe ByteString)
-
-  -- | Free the result. Adapters that manage results with the garbage collector
-  -- may implement this as a no-op; for the C-backed adapter it frees the
-  -- underlying @PGresult@, after which the result must not be used.
-  unsafeFreeResult :: r -> IO ()
-
-  -- | Number of rows (tuples) in the result.
-  ntuples :: r -> IO Int32
-
-  -- | Number of columns (fields) in the result.
-  nfields :: r -> IO Int32
-
-  -- | Name of the column at the given index.
-  fname :: r -> Int32 -> IO (Maybe ByteString)
-
-  -- | Index of the column with the given name, if present.
-  fnumber :: r -> ByteString -> IO (Maybe Int32)
-
-  -- | OID of the table the given column was fetched from, or 0.
-  ftable :: r -> Int32 -> IO Word32
-
-  -- | Column number (within its table) that the given result column was
-  -- fetched from, or 0.
-  ftablecol :: r -> Int32 -> IO Int32
-
-  -- | Format (text or binary) of the given column.
-  fformat :: r -> Int32 -> IO Format
-
-  -- | Data type OID of the given column.
-  ftype :: r -> Int32 -> IO Word32
-
-  -- | Type modifier of the given column.
-  fmod :: r -> Int32 -> IO Int
-
-  -- | Server-side storage size of the given column's type, or a negative value
-  -- for variable size.
-  fsize :: r -> Int32 -> IO Int
-
-  -- | Value at @(row, column)@, or @'Nothing'@ for SQL @NULL@. Delegates to
-  -- @'getvalue''@ by default in case the adapter provides a copying variant.
-  getvalue :: r -> Int32 -> Int32 -> IO (Maybe ByteString)
-  getvalue = getvalue'
-
-  -- | Like 'getvalue', but always returns a copy that remains valid after the
-  -- result is freed.
-  getvalue' :: r -> Int32 -> Int32 -> IO (Maybe ByteString)
-
-  -- | Whether the value at @(row, column)@ is SQL @NULL@.
-  getisnull :: r -> Int32 -> Int32 -> IO Bool
-
-  -- | Length in bytes of the value at @(row, column)@.
-  getlength :: r -> Int32 -> Int32 -> IO Int
-
-  -- | Number of parameters of a prepared statement (for a 'describePrepared'
-  -- result).
-  nparams :: r -> IO Int32
-
-  -- | Data type OID of the given prepared-statement parameter.
-  paramtype :: r -> Int32 -> IO Word32
-
-  -- | The command status tag of the result (e.g. @\"INSERT 0 1\"@).
-  cmdStatus :: r -> IO (Maybe ByteString)
-
-  -- | The number of rows affected by the command, as text.
-  cmdTuples :: r -> IO (Maybe ByteString)
+-- 'observeResult' in @pqi-conformance@) to operate on any result value
+-- without knowing the originating connection or adapter.
+--
+-- There is exactly one 'Result' type in the whole @pqi@ package; adapters
+-- construct values of this type by closing each field over their own
+-- underlying result representation (e.g. a C @PGresult@ pointer).
+data Result = Result
+  { -- | The status of the result.
+    resultStatus :: IO ExecStatus,
+    -- | The flat error message associated with the result, if any. Best-effort;
+    -- see the note on 'errorMessage'.
+    resultErrorMessage :: IO (Maybe ByteString),
+    -- | A single structured field of the result's error report.
+    resultErrorField :: FieldCode -> IO (Maybe ByteString),
+    -- | Free the result. Adapters that manage results with the garbage collector
+    -- may implement this as a no-op; for the C-backed adapter it frees the
+    -- underlying @PGresult@, after which the result must not be used.
+    unsafeFreeResult :: IO (),
+    -- | Number of rows (tuples) in the result.
+    ntuples :: IO Int32,
+    -- | Number of columns (fields) in the result.
+    nfields :: IO Int32,
+    -- | Name of the column at the given index.
+    fname :: Int32 -> IO (Maybe ByteString),
+    -- | Index of the column with the given name, if present.
+    fnumber :: ByteString -> IO (Maybe Int32),
+    -- | OID of the table the given column was fetched from, or 0.
+    ftable :: Int32 -> IO Word32,
+    -- | Column number (within its table) that the given result column was
+    -- fetched from, or 0.
+    ftablecol :: Int32 -> IO Int32,
+    -- | Format (text or binary) of the given column.
+    fformat :: Int32 -> IO Format,
+    -- | Data type OID of the given column.
+    ftype :: Int32 -> IO Word32,
+    -- | Type modifier of the given column.
+    fmod :: Int32 -> IO Int,
+    -- | Server-side storage size of the given column's type, or a negative value
+    -- for variable size.
+    fsize :: Int32 -> IO Int,
+    -- | Value at @(row, column)@, or @'Nothing'@ for SQL @NULL@. In the old
+    -- class-based API this delegated to @'getvalue''@ by default; since a
+    -- record has no notion of default methods, adapters that want that
+    -- behaviour should set this field to the same closure as 'getvalue''
+    -- when constructing the 'Result'.
+    getvalue :: Int32 -> Int32 -> IO (Maybe ByteString),
+    -- | Like 'getvalue', but always returns a copy that remains valid after the
+    -- result is freed.
+    getvalue' :: Int32 -> Int32 -> IO (Maybe ByteString),
+    -- | Whether the value at @(row, column)@ is SQL @NULL@.
+    getisnull :: Int32 -> Int32 -> IO Bool,
+    -- | Length in bytes of the value at @(row, column)@.
+    getlength :: Int32 -> Int32 -> IO Int,
+    -- | Number of parameters of a prepared statement (for a 'describePrepared'
+    -- result).
+    nparams :: IO Int32,
+    -- | Data type OID of the given prepared-statement parameter.
+    paramtype :: Int32 -> IO Word32,
+    -- | The command status tag of the result (e.g. @\"INSERT 0 1\"@).
+    cmdStatus :: IO (Maybe ByteString),
+    -- | The number of rows affected by the command, as text.
+    cmdTuples :: IO (Maybe ByteString)
+  }
 
 -- * Cancellation
 
--- | Cancellation of in-progress commands, isolated from the connection type.
-class IsCancel k where
-  -- | Request cancellation of the in-progress command via the handle.
-  cancel :: k -> IO (Either ByteString ())
+-- | A cancellation handle, isolated from the connection that produced it.
+--
+-- There is exactly one 'Cancel' type in the whole @pqi@ package; adapters
+-- construct values of this type by closing over their own underlying
+-- cancellation handle.
+data Cancel = Cancel
+  { -- | Request cancellation of the in-progress command via the handle.
+    cancel :: IO (Either ByteString ())
+  }
 
 -- * Connection
 
--- | The single flat capability class: establishing, closing, inspecting,
--- querying, escaping, async commands, pipelining, cancellation handle
--- creation, notifications, copy, large objects, and control.
+-- | The single flat capability record: closing, inspecting, querying,
+-- escaping, async commands, pipelining, cancellation handle creation,
+-- notifications, copy, large objects, and control.
 --
--- See the individual capability-class documentation (now inlined below) for
--- semantics of each method.
-class (IsResult (ResultOf c), IsCancel (CancelOf c)) => IsConnection c where
-  -- | The result type produced by this connection.
-  type ResultOf c :: Type
-
-  -- | The cancellation-handle type produced by this connection.
-  type CancelOf c :: Type
-
-  -- | Make a new (blocking) connection from a conninfo string.
-  connectdb :: ByteString -> IO c
-
-  -- | Begin establishing a connection asynchronously.
-  connectStart :: ByteString -> IO c
-
-  -- | Drive an asynchronous connection attempt forward.
-  connectPoll :: c -> IO PollingStatus
-
-  -- | A sentinel \"null\" connection.
-  newNullConnection :: IO c
-
-  -- | Whether a connection is the null sentinel.
-  isNullConnection :: c -> Bool
-
-  -- | Close the connection and release its resources.
-  finish :: c -> IO ()
-
-  -- | Reset the communication channel to the server (blocking).
-  reset :: c -> IO ()
-
-  -- | Begin resetting the connection asynchronously.
-  resetStart :: c -> IO Bool
-
-  -- | Drive an asynchronous reset forward.
-  resetPoll :: c -> IO PollingStatus
-
-  -- | The database name of the connection.
-  db :: c -> IO (Maybe ByteString)
-
-  -- | The user name of the connection.
-  user :: c -> IO (Maybe ByteString)
-
-  -- | The password of the connection.
-  pass :: c -> IO (Maybe ByteString)
-
-  -- | The server host name of the connection.
-  host :: c -> IO (Maybe ByteString)
-
-  -- | The port of the connection.
-  port :: c -> IO (Maybe ByteString)
-
-  -- | The command-line options passed in the connection request.
-  options :: c -> IO (Maybe ByteString)
-
-  -- | Current connection status.
-  status :: c -> IO ConnStatus
-
-  -- | Current in-transaction status of the server.
-  transactionStatus :: c -> IO TransactionStatus
-
-  -- | Look up a current parameter setting reported by the server.
-  parameterStatus :: c -> ByteString -> IO (Maybe ByteString)
-
-  -- | The frontend\/backend protocol version.
-  protocolVersion :: c -> IO Int
-
-  -- | The server version, as an integer of the form @MMmmpp@.
-  serverVersion :: c -> IO Int
-
-  -- | The most recent error message, if any.
-  --
-  -- Note: unlike the structured fields available via @'resultErrorField'@, the
-  -- flat message text is formatted locally by the driver, so adapters are not
-  -- expected to produce byte-identical strings.
-  errorMessage :: c -> IO (Maybe ByteString)
-
-  -- | The file descriptor of the connection socket.
-  socket :: c -> IO (Maybe Fd)
-
-  -- | The process ID of the backend serving this connection.
-  backendPID :: c -> IO Int32
-
-  -- | Whether the connection authentication method required a password but
-  -- none was available.
-  connectionNeedsPassword :: c -> IO Bool
-
-  -- | Whether the connection authentication used a password.
-  connectionUsedPassword :: c -> IO Bool
-
-  -- | Submit a command and wait for the result.
-  exec :: c -> ByteString -> IO (Maybe (ResultOf c))
-
-  -- | Submit a parameterized command. Each parameter is given as
-  -- @(type oid, value, format)@, or @'Nothing'@ for SQL @NULL@. The final
-  -- @'Format'@ selects the result format.
-  execParams ::
-    c ->
-    ByteString ->
-    [Maybe (Word32, ByteString, Format)] ->
-    Format ->
-    IO (Maybe (ResultOf c))
-
-  -- | Prepare a named statement. The OID list, when supplied, fixes parameter
-  -- types; @'Nothing'@ leaves them to be inferred.
-  prepare :: c -> ByteString -> ByteString -> Maybe [Word32] -> IO (Maybe (ResultOf c))
-
-  -- | Execute a previously prepared statement. Each parameter is
-  -- @(value, format)@, or @'Nothing'@ for SQL @NULL@.
-  execPrepared ::
-    c ->
-    ByteString ->
-    [Maybe (ByteString, Format)] ->
-    Format ->
-    IO (Maybe (ResultOf c))
-
-  -- | Describe a prepared statement.
-  describePrepared :: c -> ByteString -> IO (Maybe (ResultOf c))
-
-  -- | Describe a portal.
-  describePortal :: c -> ByteString -> IO (Maybe (ResultOf c))
-
-  -- | Escape a string for safe inclusion in an SQL literal.
-  escapeStringConn :: c -> ByteString -> IO (Maybe ByteString)
-
-  -- | Escape binary data for use within a @bytea@ literal.
-  escapeByteaConn :: c -> ByteString -> IO (Maybe ByteString)
-
-  -- | Escape a string for use as an SQL identifier (e.g. a table or column
-  -- name), including the surrounding double quotes.
-  escapeIdentifier :: c -> ByteString -> IO (Maybe ByteString)
-
-  -- | Submit a command without waiting for the result.
-  sendQuery :: c -> ByteString -> IO Bool
-
-  -- | Asynchronous @'execParams'@.
-  sendQueryParams :: c -> ByteString -> [Maybe (Word32, ByteString, Format)] -> Format -> IO Bool
-
-  -- | Asynchronous @'prepare'@.
-  sendPrepare :: c -> ByteString -> ByteString -> Maybe [Word32] -> IO Bool
-
-  -- | Asynchronous @'execPrepared'@.
-  sendQueryPrepared :: c -> ByteString -> [Maybe (ByteString, Format)] -> Format -> IO Bool
-
-  -- | Asynchronous @'describePrepared'@.
-  sendDescribePrepared :: c -> ByteString -> IO Bool
-
-  -- | Asynchronous @'describePortal'@.
-  sendDescribePortal :: c -> ByteString -> IO Bool
-
-  -- | Collect the next result from an asynchronous command.
-  getResult :: c -> IO (Maybe (ResultOf c))
-
-  -- | Read input from the server into the driver's buffer.
-  consumeInput :: c -> IO Bool
-
-  -- | Whether a command is busy (a @'getResult'@ would block).
-  isBusy :: c -> IO Bool
-
-  -- | Set the non-blocking flag of the connection.
-  setnonblocking :: c -> Bool -> IO Bool
-
-  -- | Whether the connection is in non-blocking mode.
-  isnonblocking :: c -> IO Bool
-
-  -- | Select single-row mode for the currently executing query.
-  setSingleRowMode :: c -> IO Bool
-
-  -- | Flush queued output data to the server.
-  flush :: c -> IO FlushStatus
-
-  -- | Current pipeline-mode status.
-  pipelineStatus :: c -> IO PipelineStatus
-
-  -- | Enter pipeline mode.
-  enterPipelineMode :: c -> IO Bool
-
-  -- | Leave pipeline mode.
-  exitPipelineMode :: c -> IO Bool
-
-  -- | Mark a synchronization point in a pipeline.
-  pipelineSync :: c -> IO Bool
-
-  -- | Request the server to flush its output buffer in pipeline mode.
-  sendFlushRequest :: c -> IO Bool
-
-  -- | Obtain a cancellation handle for the connection.
-  getCancel :: c -> IO (Maybe (CancelOf c))
-
-  -- | Return the next notification from the queue, if any.
-  notifies :: c -> IO (Maybe Notify)
-
-  -- | Stop accumulating notices for retrieval via @'getNotice'@.
-  disableNoticeReporting :: c -> IO ()
-
-  -- | Start accumulating notices for retrieval via @'getNotice'@.
-  enableNoticeReporting :: c -> IO ()
-
-  -- | Retrieve the next accumulated notice, if any.
-  getNotice :: c -> IO (Maybe ByteString)
-
-  -- | Send data on a @COPY FROM STDIN@ connection.
-  putCopyData :: c -> ByteString -> IO CopyInResult
-
-  -- | Signal the end of @COPY FROM STDIN@; @'Just'@ aborts with the given error.
-  putCopyEnd :: c -> Maybe ByteString -> IO CopyInResult
-
-  -- | Receive data on a @COPY TO STDOUT@ connection. The @'Bool'@ selects
-  -- non-blocking mode.
-  getCopyData :: c -> Bool -> IO CopyOutResult
-
-  -- | Create a new large object.
-  loCreat :: c -> IO (Maybe Word32)
-
-  -- | Create a new large object with the given OID.
-  loCreate :: c -> Word32 -> IO (Maybe Word32)
-
-  -- | Import a file as a new large object.
-  loImport :: c -> FilePath -> IO (Maybe Word32)
-
-  -- | Import a file as a new large object with the given OID.
-  loImportWithOid :: c -> FilePath -> Word32 -> IO (Maybe Word32)
-
-  -- | Export a large object to a file.
-  loExport :: c -> Word32 -> FilePath -> IO (Maybe ())
-
-  -- | Open a large object.
-  loOpen :: c -> Word32 -> IOMode -> IO (Maybe Int32)
-
-  -- | Write to an open large object.
-  loWrite :: c -> Int32 -> ByteString -> IO (Maybe Int)
-
-  -- | Read from an open large object.
-  loRead :: c -> Int32 -> Int -> IO (Maybe ByteString)
-
-  -- | Seek within an open large object.
-  loSeek :: c -> Int32 -> SeekMode -> Int -> IO (Maybe Int)
-
-  -- | Report the current seek position of an open large object.
-  loTell :: c -> Int32 -> IO (Maybe Int)
-
-  -- | Truncate an open large object.
-  loTruncate :: c -> Int32 -> Int -> IO (Maybe ())
-
-  -- | Close an open large object.
-  loClose :: c -> Int32 -> IO (Maybe ())
-
-  -- | Remove a large object.
-  loUnlink :: c -> Word32 -> IO (Maybe ())
-
-  -- | The current client encoding name.
-  clientEncoding :: c -> IO ByteString
-
-  -- | Set the client encoding.
-  setClientEncoding :: c -> ByteString -> IO Bool
-
-  -- | Set error verbosity, returning the previous setting.
-  setErrorVerbosity :: c -> Verbosity -> IO Verbosity
+-- There is exactly one 'Connection' type in the whole @pqi@ package.
+-- Adapter packages (e.g. @pqi-ffi@, @pqi-native@) construct values of this
+-- type from their own top-level @connectdb@\/@connectStart@ functions,
+-- closing each field over their own underlying connection representation
+-- (e.g. a C @PGconn@ pointer, or a native socket). This module only
+-- defines the shape; it does not construct any connections.
+--
+-- See the field-level documentation for the semantics of each capability.
+data Connection = Connection
+  { -- | Drive an asynchronous connection attempt forward.
+    connectPoll :: IO PollingStatus,
+    -- | Whether the connection is the null sentinel.
+    isNullConnection :: Bool,
+    -- | Close the connection and release its resources.
+    finish :: IO (),
+    -- | Reset the communication channel to the server (blocking).
+    reset :: IO (),
+    -- | Begin resetting the connection asynchronously.
+    resetStart :: IO Bool,
+    -- | Drive an asynchronous reset forward.
+    resetPoll :: IO PollingStatus,
+    -- | The database name of the connection.
+    db :: IO (Maybe ByteString),
+    -- | The user name of the connection.
+    user :: IO (Maybe ByteString),
+    -- | The password of the connection.
+    pass :: IO (Maybe ByteString),
+    -- | The server host name of the connection.
+    host :: IO (Maybe ByteString),
+    -- | The port of the connection.
+    port :: IO (Maybe ByteString),
+    -- | The command-line options passed in the connection request.
+    options :: IO (Maybe ByteString),
+    -- | Current connection status.
+    status :: IO ConnStatus,
+    -- | Current in-transaction status of the server.
+    transactionStatus :: IO TransactionStatus,
+    -- | Look up a current parameter setting reported by the server.
+    parameterStatus :: ByteString -> IO (Maybe ByteString),
+    -- | The frontend\/backend protocol version.
+    protocolVersion :: IO Int,
+    -- | The server version, as an integer of the form @MMmmpp@.
+    serverVersion :: IO Int,
+    -- | The most recent error message, if any.
+    --
+    -- Note: unlike the structured fields available via @'resultErrorField'@, the
+    -- flat message text is formatted locally by the driver, so adapters are not
+    -- expected to produce byte-identical strings.
+    errorMessage :: IO (Maybe ByteString),
+    -- | The file descriptor of the connection socket.
+    socket :: IO (Maybe Fd),
+    -- | The process ID of the backend serving this connection.
+    backendPID :: IO Int32,
+    -- | Whether the connection authentication method required a password but
+    -- none was available.
+    connectionNeedsPassword :: IO Bool,
+    -- | Whether the connection authentication used a password.
+    connectionUsedPassword :: IO Bool,
+    -- | Submit a command and wait for the result.
+    exec :: ByteString -> IO (Maybe Result),
+    -- | Submit a parameterized command. Each parameter is given as
+    -- @(type oid, value, format)@, or @'Nothing'@ for SQL @NULL@. The final
+    -- @'Format'@ selects the result format.
+    execParams ::
+      ByteString ->
+      [Maybe (Word32, ByteString, Format)] ->
+      Format ->
+      IO (Maybe Result),
+    -- | Prepare a named statement. The OID list, when supplied, fixes parameter
+    -- types; @'Nothing'@ leaves them to be inferred.
+    prepare :: ByteString -> ByteString -> Maybe [Word32] -> IO (Maybe Result),
+    -- | Execute a previously prepared statement. Each parameter is
+    -- @(value, format)@, or @'Nothing'@ for SQL @NULL@.
+    execPrepared ::
+      ByteString ->
+      [Maybe (ByteString, Format)] ->
+      Format ->
+      IO (Maybe Result),
+    -- | Describe a prepared statement.
+    describePrepared :: ByteString -> IO (Maybe Result),
+    -- | Describe a portal.
+    describePortal :: ByteString -> IO (Maybe Result),
+    -- | Escape a string for safe inclusion in an SQL literal.
+    escapeStringConn :: ByteString -> IO (Maybe ByteString),
+    -- | Escape binary data for use within a @bytea@ literal.
+    escapeByteaConn :: ByteString -> IO (Maybe ByteString),
+    -- | Escape a string for use as an SQL identifier (e.g. a table or column
+    -- name), including the surrounding double quotes.
+    escapeIdentifier :: ByteString -> IO (Maybe ByteString),
+    -- | Submit a command without waiting for the result.
+    sendQuery :: ByteString -> IO Bool,
+    -- | Asynchronous @'execParams'@.
+    sendQueryParams :: ByteString -> [Maybe (Word32, ByteString, Format)] -> Format -> IO Bool,
+    -- | Asynchronous @'prepare'@.
+    sendPrepare :: ByteString -> ByteString -> Maybe [Word32] -> IO Bool,
+    -- | Asynchronous @'execPrepared'@.
+    sendQueryPrepared :: ByteString -> [Maybe (ByteString, Format)] -> Format -> IO Bool,
+    -- | Asynchronous @'describePrepared'@.
+    sendDescribePrepared :: ByteString -> IO Bool,
+    -- | Asynchronous @'describePortal'@.
+    sendDescribePortal :: ByteString -> IO Bool,
+    -- | Collect the next result from an asynchronous command.
+    getResult :: IO (Maybe Result),
+    -- | Read input from the server into the driver's buffer.
+    consumeInput :: IO Bool,
+    -- | Whether a command is busy (a @'getResult'@ would block).
+    isBusy :: IO Bool,
+    -- | Set the non-blocking flag of the connection.
+    setnonblocking :: Bool -> IO Bool,
+    -- | Whether the connection is in non-blocking mode.
+    isnonblocking :: IO Bool,
+    -- | Select single-row mode for the currently executing query.
+    setSingleRowMode :: IO Bool,
+    -- | Flush queued output data to the server.
+    flush :: IO FlushStatus,
+    -- | Current pipeline-mode status.
+    pipelineStatus :: IO PipelineStatus,
+    -- | Enter pipeline mode.
+    enterPipelineMode :: IO Bool,
+    -- | Leave pipeline mode.
+    exitPipelineMode :: IO Bool,
+    -- | Mark a synchronization point in a pipeline.
+    pipelineSync :: IO Bool,
+    -- | Request the server to flush its output buffer in pipeline mode.
+    sendFlushRequest :: IO Bool,
+    -- | Obtain a cancellation handle for the connection.
+    getCancel :: IO (Maybe Cancel),
+    -- | Return the next notification from the queue, if any.
+    notifies :: IO (Maybe Notify),
+    -- | Stop accumulating notices for retrieval via @'getNotice'@.
+    disableNoticeReporting :: IO (),
+    -- | Start accumulating notices for retrieval via @'getNotice'@.
+    enableNoticeReporting :: IO (),
+    -- | Retrieve the next accumulated notice, if any.
+    getNotice :: IO (Maybe ByteString),
+    -- | Send data on a @COPY FROM STDIN@ connection.
+    putCopyData :: ByteString -> IO CopyInResult,
+    -- | Signal the end of @COPY FROM STDIN@; @'Just'@ aborts with the given error.
+    putCopyEnd :: Maybe ByteString -> IO CopyInResult,
+    -- | Receive data on a @COPY TO STDOUT@ connection. The @'Bool'@ selects
+    -- non-blocking mode.
+    getCopyData :: Bool -> IO CopyOutResult,
+    -- | Create a new large object.
+    loCreat :: IO (Maybe Word32),
+    -- | Create a new large object with the given OID.
+    loCreate :: Word32 -> IO (Maybe Word32),
+    -- | Import a file as a new large object.
+    loImport :: FilePath -> IO (Maybe Word32),
+    -- | Import a file as a new large object with the given OID.
+    loImportWithOid :: FilePath -> Word32 -> IO (Maybe Word32),
+    -- | Export a large object to a file.
+    loExport :: Word32 -> FilePath -> IO (Maybe ()),
+    -- | Open a large object.
+    loOpen :: Word32 -> IOMode -> IO (Maybe Int32),
+    -- | Write to an open large object.
+    loWrite :: Int32 -> ByteString -> IO (Maybe Int),
+    -- | Read from an open large object.
+    loRead :: Int32 -> Int -> IO (Maybe ByteString),
+    -- | Seek within an open large object.
+    loSeek :: Int32 -> SeekMode -> Int -> IO (Maybe Int),
+    -- | Report the current seek position of an open large object.
+    loTell :: Int32 -> IO (Maybe Int),
+    -- | Truncate an open large object.
+    loTruncate :: Int32 -> Int -> IO (Maybe ()),
+    -- | Close an open large object.
+    loClose :: Int32 -> IO (Maybe ()),
+    -- | Remove a large object.
+    loUnlink :: Word32 -> IO (Maybe ()),
+    -- | The current client encoding name.
+    clientEncoding :: IO ByteString,
+    -- | Set the client encoding.
+    setClientEncoding :: ByteString -> IO Bool,
+    -- | Set error verbosity, returning the previous setting.
+    setErrorVerbosity :: Verbosity -> IO Verbosity
+  }
+
+-- * Adapter
+
+-- | An adapter package's connection-establishing functions, bundled into one
+-- value.
+--
+-- 'Connection', 'Result', and 'Cancel' are per-connection and per-result;
+-- they carry no information about which adapter produced them, so they
+-- cannot themselves stand in for "the FFI adapter" or "the native adapter"
+-- the way a driver-parameterised type could. 'Adapter' fills that gap: it is
+-- the one value that names an adapter and knows how to bring a 'Connection'
+-- into being, so a caller that must remain adapter-agnostic (a differential
+-- test harness comparing two adapters, or a library that lets its users pick
+-- an adapter at runtime) can hold onto a single 'Adapter' value instead of a
+-- family of adapter-qualified top-level functions.
+--
+-- Each adapter package (e.g. @pqi-ffi@, @pqi-native@) exports exactly one
+-- top-level value of this type, conventionally named @adapter@.
+data Adapter = Adapter
+  { -- | A short identifier for the adapter (e.g. @\"pqi-ffi\"@), for use in
+    -- test descriptions, logs, and error messages.
+    name :: Text,
+    -- | Connect to a database, as @PQconnectdb@.
+    connectdb :: ByteString -> IO Connection,
+    -- | Begin connecting to a database asynchronously, as @PQconnectStart@.
+    connectStart :: ByteString -> IO Connection,
+    -- | The null-sentinel connection, as @PQnewNullConnection@.
+    newNullConnection :: IO Connection,
+    -- | Convert the textual representation of a @bytea@ value, as produced
+    -- by the server, back into raw bytes, as @PQunescapeBytea@.
+    unescapeBytea :: ByteString -> IO (Maybe ByteString)
+  }
