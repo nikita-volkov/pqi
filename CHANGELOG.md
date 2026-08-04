@@ -1,3 +1,7 @@
+# v0.1.0.1
+
+Corrected the readme.
+
 # v0.1.0.0
 
 ## Breaking
