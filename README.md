@@ -11,7 +11,7 @@ A driver-agnostic interface to the PostgreSQL [libpq][libpq] API.
 |---------|-------------|
 | **[pqi](https://github.com/nikita-volkov/pqi)** *(this)* | The interface: `IsConnection` class, shared types, and connection-independent helpers |
 | [pqi-ffi](https://github.com/nikita-volkov/pqi-ffi) | FFI adapter backed by `postgresql-libpq` and the C `libpq` library. Battle-tested, production-safe |
-| [pqi-native](https://github.com/nikita-volkov/pqi-native) | Pure-Haskell adapter speaking the PostgreSQL wire protocol directly. No C dependency. Experimental |
+| [pqi-native](https://github.com/nikita-volkov/pqi-native) | Pure-Haskell adapter speaking the PostgreSQL wire protocol directly. No C dependency. Alpha — interchangeable with `pqi-ffi` |
 | [pqi-conformance](https://github.com/nikita-volkov/pqi-conformance) | Reusable `hspec` conformance suite that differentially tests any adapter against `postgresql-libpq` |
 
 ## Motivation
@@ -29,12 +29,14 @@ API surface, then ships two adapters:
 - [`pqi-ffi`](https://github.com/nikita-volkov/pqi-ffi) — a thin wrapper
   around `postgresql-libpq`. Battle-tested, production-safe. The default
   choice.
-- [`pqi-native`](https://github.com/nikita-volkov/pqi-native) — a pure-Haskell
-  implementation of the PostgreSQL wire protocol, generated with LLM
-  assistance. **Experimental.** It produces byte-identical output to `postgresql-libpq`
-  for all protocol-derived values (verified by differential testing), but it
-  has not yet been exercised in production at scale. If you adopt it, we want
-  to hear from you.
+- [`pqi-native`](https://github.com/nikita-volkov/pqi-native) — a from-scratch
+  pure-Haskell implementation of the PostgreSQL wire protocol. **Alpha.** It
+  produces byte-identical output to `postgresql-libpq` for all
+  protocol-derived values (verified by differential testing), but it has not
+  yet been exercised in production at scale. Because it implements the same
+  `pqi` interface as `pqi-ffi`, the two are fully interchangeable — switching
+  between them is a one-line change, so adopting `pqi-native` now carries no
+  lock-in. If you adopt it, we want to hear from you.
 
 A driver built against `pqi` gives its users transport choice without any
 changes to the driver itself. Each adapter package exports a single
@@ -45,7 +47,7 @@ the user picks one at connection time:
 -- C-backed (safe, requires libpq)
 connection <- connectdb Pqi.Ffi.adapter settings
 
--- Pure Haskell (experimental, no C dependency)
+-- Pure Haskell (alpha, no C dependency)
 connection <- connectdb Pqi.Native.adapter settings
 ```
 

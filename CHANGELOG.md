@@ -1,4 +1,6 @@
-# Upcoming
+# v0.1.0.2
+
+Polish the docs.
 
 # v0.1.0.1
 
