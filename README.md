@@ -37,14 +37,16 @@ API surface, then ships two adapters:
   to hear from you.
 
 A driver built against `pqi` gives its users transport choice without any
-changes to the driver itself. The user picks an adapter at connection time:
+changes to the driver itself. Each adapter package exports a single
+top-level `Adapter` value bundling its connection-establishing functions;
+the user picks one at connection time:
 
 ```haskell
 -- C-backed (safe, requires libpq)
-connection <- connect (Proxy @Pqi.Ffi.Connection) settings
+connection <- connectdb Pqi.Ffi.adapter settings
 
 -- Pure Haskell (experimental, no C dependency)
-connection <- connect (Proxy @Pqi.Native.Connection) settings
+connection <- connectdb Pqi.Native.adapter settings
 ```
 
 ## Testing model
@@ -54,9 +56,13 @@ connection <- connect (Proxy @Pqi.Native.Connection) settings
 ## Interface
 
 `pqi` reproduces the API surface of the [`postgresql-libpq`][postgresql-libpq]
-package, but reifies the connection — and the results it produces — as a type
-class instead of a single concrete type. Code written against this interface
-runs unchanged on any adapter:
+package, but reifies the connection — and the results and cancellation
+handles it produces — as plain records of closures instead of a single
+concrete type tied to `libpq`. There is exactly one `Connection`, one
+`Result`, and one `Cancel` type in the whole package; each field is an `IO`
+action that an adapter has already closed over its own underlying handle
+(a C `PGconn` pointer, a native socket, etc.). Code written against this
+interface runs unchanged on any adapter:
 
 - [`pqi-ffi`](https://github.com/nikita-volkov/pqi-ffi) — a thin
   adapter backed by the C `libpq` library via `postgresql-libpq`.
@@ -69,21 +75,28 @@ values. This contract is enforced by
 [`pqi-conformance`](https://github.com/nikita-volkov/pqi-conformance), which
 runs every operation differentially against [`postgresql-libpq`][postgresql-libpq] and asserts equality.
 
-This package ships only the interface: the `IsConnection` class, the associated
-`ResultOf` result type family, the shared type vocabulary (statuses, field
-codes, formats, OIDs), and the connection-independent helpers.
+This package ships only the interface: the `Connection`, `Result`, and
+`Cancel` records, the `Adapter` type that adapter packages bundle their
+connection-establishing functions under, and the shared type vocabulary
+(statuses, field codes, formats, OIDs). It does not itself construct any
+connections — that's each adapter package's job, exposed as a single
+top-level `adapter :: Adapter` value.
 
 ## Relationship to `postgresql-libpq`
 
 The function names, argument order, and semantics mirror
 `Database.PostgreSQL.LibPQ`. The deliberate departures are:
 
-- `Connection` and `Result` become the class parameter `c` and the associated
-  type family `ResultOf c`.
+- `Connection`, `Result`, and `Cancel` are plain records of closures rather
+  than a class-parameterised type and its associated types.
 - OIDs are a plain `Word32` and row/column/parameter indices are a plain
   `Int32`, instead of the C-specific newtypes of the original.
 - There's no `invalidOid` constant. It's just `0`.
-- Ambiguous, rarely-useful helpers (e.g. `resStatus`) are omitted.
+- Ambiguous, rarely-useful helpers (e.g. `resStatus`) are omitted, as is
+  `libpqVersion`.
+- `unescapeBytea` is a field of `Adapter` rather than a
+  connection-independent top-level function, since its implementation is
+  adapter-specific.
 
 [libpq]: https://www.postgresql.org/docs/current/libpq.html
 [postgresql-libpq]: https://hackage.haskell.org/package/postgresql-libpq
