@@ -1,37 +1,39 @@
 -- | A driver-agnostic reproduction of the [@postgresql-libpq@](https://hackage.haskell.org/package/postgresql-libpq) API (version
 -- @0.11@, the pipelining-capable release).
 --
--- The connection is reified as a single concrete record type, 'Connection',
--- whose fields are the closures that implement each capability. Result
--- accessors live in the independent 'Result' record, and cancellation
--- handles in the 'Cancel' record. A 'Connection' produces 'Result's and
--- 'Cancel's directly (via its 'exec', 'getResult', 'getCancel', etc.
--- fields) — there is no type-level indirection: the whole package defines
--- exactly one 'Connection', one 'Result', and one 'Cancel' type.
+-- The interface is reified as plain records of closures: a 'Connection',
+-- the 'Result's and 'Cancel's it produces (via its 'exec', 'getResult',
+-- 'getCancel', etc. fields), and an 'Adapter' that knows how to establish
+-- connections. There is exactly one of each of these types in the whole
+-- package — no type-level indirection and no polymorphism over drivers.
 --
 -- Each field of these records is a closure that has already captured
 -- whatever underlying handle (e.g. a C @PGconn@ pointer, or a native
 -- socket) it needs; from the caller's perspective a 'Connection' is simply
--- a bundle of @IO@ actions. This trades the old class-based polymorphism
--- for a concrete, monomorphic value that can be passed around, stored, and
--- constructed by whichever adapter package is in use.
+-- a bundle of @IO@ actions — a concrete, monomorphic value that can be
+-- passed around and stored like any other.
 --
--- Adapter packages (e.g. @pqi-ffi@, @pqi-native@) are responsible for
--- constructing 'Connection' values — this package does not provide any
--- @connectdb@\/@connectStart@\/@newNullConnection@-style constructors of
--- its own, since those don't have a connection to close over yet. Instead,
--- each adapter package exports a single top-level value of type 'Adapter',
--- bundling its connection-establishing functions together so that callers
--- who need to be adapter-agnostic (e.g. a differential test harness, or a
--- consumer that lets its own users pick an adapter) can hold onto one value
--- rather than a family of adapter-qualified functions.
+-- This package ships only the interface; it constructs no connections of
+-- its own, since there is nothing for a 'Connection' to close over until an
+-- adapter supplies a handle. That is the job of adapter packages (e.g.
+-- @pqi-ffi@, @pqi-native@), each of which exports a single top-level
+-- 'Adapter' value bundling its connection-establishing functions, so that
+-- callers who need to remain adapter-agnostic (e.g. a differential test
+-- harness, or a consumer that lets its own users pick an adapter) can hold
+-- onto one value rather than a family of adapter-qualified functions.
+--
+-- Adapters mirror @libpq@ in semantics, not just in shape: a compliant
+-- adapter must produce byte-identical output to @libpq@ for all
+-- protocol-derived values. That contract is enforced by @pqi-conformance@,
+-- which runs every operation differentially against @postgresql-libpq@ and
+-- asserts equality.
 --
 -- Function names, argument order, and semantics mirror the API of the C library binding
 -- @postgresql-libpq@.
 -- The only deliberate departures are:
 --
 -- * @Connection@, @Result@, and @Cancel@ are plain records of closures
---   rather than a class-parameterised type and its associated types.
+--   rather than opaque handles operated on by top-level functions.
 --
 -- * OIDs are a plain 'Word32' and row\/column\/parameter indices and LoFds are a
 --   plain 'Int32', rather than the C-specific newtypes of the original.
@@ -240,13 +242,12 @@ data Notify = Notify
 -- * Result inspection
 
 -- | Result-accessor closures, independent of the connection that produced
--- the result. This allows row decoders and projection functions (such as
--- 'observeResult' in @pqi-conformance@) to operate on any result value
--- without knowing the originating connection or adapter.
+-- the result. This allows row decoders and projection functions to operate
+-- on any result value without knowing the originating connection or
+-- adapter.
 --
--- There is exactly one 'Result' type in the whole @pqi@ package; adapters
--- construct values of this type by closing each field over their own
--- underlying result representation (e.g. a C @PGresult@ pointer).
+-- Adapters construct values of this type by closing each field over their
+-- own underlying result representation (e.g. a C @PGresult@ pointer).
 data Result = Result
   { -- | The status of the result.
     resultStatus :: IO ExecStatus,
@@ -281,11 +282,10 @@ data Result = Result
     -- | Server-side storage size of the given column's type, or a negative value
     -- for variable size.
     fsize :: Int32 -> IO Int,
-    -- | Value at @(row, column)@, or @'Nothing'@ for SQL @NULL@. In the old
-    -- class-based API this delegated to @'getvalue''@ by default; since a
-    -- record has no notion of default methods, adapters that want that
-    -- behaviour should set this field to the same closure as 'getvalue''
-    -- when constructing the 'Result'.
+    -- | Value at @(row, column)@, or @'Nothing'@ for SQL @NULL@. The bytes are
+    -- not guaranteed to outlive the result: an adapter may return a view into
+    -- the result's own storage, which 'unsafeFreeResult' invalidates. Use
+    -- 'getvalue'' when the value has to outlive the result.
     getvalue :: Int32 -> Int32 -> IO (Maybe ByteString),
     -- | Like 'getvalue', but always returns a copy that remains valid after the
     -- result is freed.
@@ -307,11 +307,11 @@ data Result = Result
 
 -- * Cancellation
 
--- | A cancellation handle, isolated from the connection that produced it.
+-- | A cancellation handle, isolated from the connection that produced it,
+-- and thus usable from another thread while that connection is busy.
 --
--- There is exactly one 'Cancel' type in the whole @pqi@ package; adapters
--- construct values of this type by closing over their own underlying
--- cancellation handle.
+-- Adapters construct values of this type by closing over their own
+-- underlying cancellation handle.
 data Cancel = Cancel
   { -- | Request cancellation of the in-progress command via the handle.
     cancel :: IO (Either ByteString ())
@@ -323,9 +323,8 @@ data Cancel = Cancel
 -- escaping, async commands, pipelining, cancellation handle creation,
 -- notifications, copy, large objects, and control.
 --
--- There is exactly one 'Connection' type in the whole @pqi@ package.
 -- Adapter packages (e.g. @pqi-ffi@, @pqi-native@) construct values of this
--- type from their own top-level @connectdb@\/@connectStart@ functions,
+-- type via the 'connectdb'\/'connectStart' fields of their 'Adapter',
 -- closing each field over their own underlying connection representation
 -- (e.g. a C @PGconn@ pointer, or a native socket). This module only
 -- defines the shape; it does not construct any connections.
@@ -506,13 +505,13 @@ data Connection = Connection
 --
 -- 'Connection', 'Result', and 'Cancel' are per-connection and per-result;
 -- they carry no information about which adapter produced them, so they
--- cannot themselves stand in for "the FFI adapter" or "the native adapter"
--- the way a driver-parameterised type could. 'Adapter' fills that gap: it is
--- the one value that names an adapter and knows how to bring a 'Connection'
--- into being, so a caller that must remain adapter-agnostic (a differential
--- test harness comparing two adapters, or a library that lets its users pick
--- an adapter at runtime) can hold onto a single 'Adapter' value instead of a
--- family of adapter-qualified top-level functions.
+-- cannot themselves stand in for "the FFI adapter" or "the native adapter".
+-- 'Adapter' fills that gap: it is the one value that names an adapter and
+-- knows how to bring a 'Connection' into being, so a caller that must remain
+-- adapter-agnostic (a differential test harness comparing two adapters, or a
+-- library that lets its users pick an adapter at runtime) can hold onto a
+-- single 'Adapter' value instead of a family of adapter-qualified top-level
+-- functions.
 --
 -- Each adapter package (e.g. @pqi-ffi@, @pqi-native@) exports exactly one
 -- top-level value of this type, conventionally named @adapter@.
