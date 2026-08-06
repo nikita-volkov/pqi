@@ -94,10 +94,9 @@ The function names, argument order, and semantics mirror
 - OIDs are a plain `Word32` and row/column/parameter indices are a plain
   `Int32`, instead of the C-specific newtypes of the original.
 - There's no `invalidOid` constant. It's just `0`.
-- Ambiguous, rarely-useful helpers (e.g. `resStatus`) are omitted, as is
-  `libpqVersion`.
-- `unescapeBytea` is a field of `Adapter` rather than a
-  connection-independent top-level function, since its implementation is
+- `libpqVersion` is omitted.
+- `unescapeBytea` and `resStatus` are fields of `Adapter` rather than
+  connection-independent top-level functions, since their implementations are
   adapter-specific.
 
 [libpq]: https://www.postgresql.org/docs/current/libpq.html

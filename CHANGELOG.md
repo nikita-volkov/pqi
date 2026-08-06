@@ -1,5 +1,9 @@
 # Upcoming
 
+## Breaking
+
+- Add the `resStatus` field to `Adapter`
+
 # v0.1.0.2
 
 Polish the docs.

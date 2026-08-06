@@ -20,8 +20,8 @@
 -- * Connection acquisition lives in t'Adapter': @connectdb@, @connectStart@
 --   and @newNullConnection@ are its fields, not top-level functions.
 --
--- * @unescapeBytea@ is an t'Adapter' field too. It takes no connection, but
---   its implementation is adapter-specific.
+-- * @unescapeBytea@ and @resStatus@ are t'Adapter' fields too. They take no
+--   connection, but their implementations are adapter-specific.
 --
 -- * t'Connection', t'Result' and t'Cancel' are records of closures rather than
 --   opaque handles fed to top-level functions. Call sites are unchanged:
@@ -30,7 +30,7 @@
 -- * @Oid@ is 'Word32'; @Row@, @Column@, @LoFd@ are 'Int32'. No @invalidOid@
 --   constant — it is @0@.
 --
--- * @resStatus@ and @libpqVersion@ are omitted.
+-- * @libpqVersion@ is omitted.
 module Pqi
   ( -- * Adapter
     Adapter (..),
@@ -492,5 +492,8 @@ data Adapter = Adapter
     newNullConnection :: IO Connection,
     -- | Convert the textual representation of a @bytea@ value, as produced
     -- by the server, back into raw bytes, as @PQunescapeBytea@.
-    unescapeBytea :: ByteString -> IO (Maybe ByteString)
+    unescapeBytea :: ByteString -> IO (Maybe ByteString),
+    -- | Render an 'ExecStatus' as the string describing its status code
+    -- (e.g. @\"PGRES_TUPLES_OK\"@), as @PQresStatus@.
+    resStatus :: ExecStatus -> IO ByteString
   }
