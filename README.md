@@ -11,14 +11,14 @@ A driver-agnostic interface to the PostgreSQL [libpq][libpq] API.
 |---------|-------------|
 | **[pqi](https://github.com/nikita-volkov/pqi)** *(this)* | The interface: `IsConnection` class, shared types, and connection-independent helpers |
 | [pqi-ffi](https://github.com/nikita-volkov/pqi-ffi) | FFI adapter backed by `postgresql-libpq` and the C `libpq` library. Battle-tested, production-safe |
-| [pqi-native](https://github.com/nikita-volkov/pqi-native) | Pure-Haskell adapter speaking the PostgreSQL wire protocol directly. No C dependency. Alpha — interchangeable with `pqi-ffi` |
+| [pqi-native](https://github.com/nikita-volkov/pqi-native) | Pure-Haskell adapter speaking the PostgreSQL wire protocol directly. No C dependency. Alpha - interchangeable with `pqi-ffi` |
 | [pqi-conformance](https://github.com/nikita-volkov/pqi-conformance) | Reusable `hspec` conformance suite that differentially tests any adapter against `postgresql-libpq` |
 
 ## Motivation
 
 Every major Haskell PostgreSQL driver today depends on
 [`postgresql-libpq`][postgresql-libpq], a binding to the C `libpq` library.
-This means every user of every driver needs `libpq` installed — on their
+This means every user of every driver needs `libpq` installed - on their
 development machine, in CI, in production containers, on cross-compilation
 targets. There is no way to opt out.
 
@@ -26,15 +26,15 @@ targets. There is no way to opt out.
 defines a driver-agnostic type class (`IsConnection`) that mirrors the `libpq`
 API surface, then ships two adapters:
 
-- [`pqi-ffi`](https://github.com/nikita-volkov/pqi-ffi) — a thin wrapper
+- [`pqi-ffi`](https://github.com/nikita-volkov/pqi-ffi) - a thin wrapper
   around `postgresql-libpq`. Battle-tested, production-safe. The default
   choice.
-- [`pqi-native`](https://github.com/nikita-volkov/pqi-native) — a from-scratch
+- [`pqi-native`](https://github.com/nikita-volkov/pqi-native) - a from-scratch
   pure-Haskell implementation of the PostgreSQL wire protocol. **Alpha.** It
-  produces byte-identical output to `postgresql-libpq` for all
+  produces identical output to `postgresql-libpq` for all
   protocol-derived values (verified by differential testing), but it has not
   yet been exercised in production at scale. Because it implements the same
-  `pqi` interface as `pqi-ffi`, the two are fully interchangeable — switching
+  `pqi` interface as `pqi-ffi`, the two are fully interchangeable - switching
   between them is a one-line change, so adopting `pqi-native` now carries no
   lock-in. If you adopt it, we want to hear from you.
 
@@ -58,21 +58,21 @@ connection <- connectdb Pqi.Native.adapter settings
 ## Interface
 
 `pqi` reproduces the API surface of the [`postgresql-libpq`][postgresql-libpq]
-package, but reifies the connection — and the results and cancellation
-handles it produces — as plain records of closures instead of a single
+package, but reifies the connection - and the results and cancellation
+handles it produces - as plain records of closures instead of a single
 concrete type tied to `libpq`. There is exactly one `Connection`, one
 `Result`, and one `Cancel` type in the whole package; each field is an `IO`
 action that an adapter has already closed over its own underlying handle
 (a C `PGconn` pointer, a native socket, etc.). Code written against this
 interface runs unchanged on any adapter:
 
-- [`pqi-ffi`](https://github.com/nikita-volkov/pqi-ffi) — a thin
+- [`pqi-ffi`](https://github.com/nikita-volkov/pqi-ffi) - a thin
   adapter backed by the C `libpq` library via `postgresql-libpq`.
-- [`pqi-native`](https://github.com/nikita-volkov/pqi-native) — a
+- [`pqi-native`](https://github.com/nikita-volkov/pqi-native) - a
   pure-Haskell adapter that speaks the PostgreSQL wire protocol directly.
 
 The interface mirrors `libpq` in semantics, not just shape: every compliant
-adapter must produce byte-identical output to `libpq` for all protocol-derived
+adapter must produce identical output to `libpq` for all protocol-derived
 values. This contract is enforced by
 [`pqi-conformance`](https://github.com/nikita-volkov/pqi-conformance), which
 runs every operation differentially against [`postgresql-libpq`][postgresql-libpq] and asserts equality.
@@ -81,7 +81,7 @@ This package ships only the interface: the `Connection`, `Result`, and
 `Cancel` records, the `Adapter` type that adapter packages bundle their
 connection-establishing functions under, and the shared type vocabulary
 (statuses, field codes, formats, OIDs). It does not itself construct any
-connections — that's each adapter package's job, exposed as a single
+connections - that's each adapter package's job, exposed as a single
 top-level `adapter :: Adapter` value.
 
 ## Relationship to `postgresql-libpq`

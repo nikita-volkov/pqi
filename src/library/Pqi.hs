@@ -3,18 +3,17 @@
 --
 -- t'Connection', t'Result' and t'Cancel' are records of @IO@ closures, each
 -- already closed over the handle it needs (a C @PGconn@ pointer, a native
--- socket, ...). Exactly one of each type exists in the package: no classes,
--- no type parameters.
+-- socket, ...).
 --
--- Connections come from adapter packages — @pqi-ffi@ (C @libpq@ via
--- @postgresql-libpq@) and @pqi-native@ (pure-Haskell wire protocol) — each
--- exporting one top-level t'Adapter' value. An adapter must be byte-identical
--- to @libpq@ on every protocol-derived value; @pqi-conformance@ enforces that
+-- Connections come from adapter packages - @pqi-ffi@ (C @libpq@ via
+-- @postgresql-libpq@) and @pqi-native@ (pure-Haskell wire protocol) - each
+-- exporting one top-level t'Adapter' value. An adapter must be identical
+-- to @libpq@ on every protocol-derived value. @pqi-conformance@ enforces that
 -- differentially.
 --
 -- == Differences from @postgresql-libpq@
 --
--- Everything else — names, argument order, semantics — mirrors
+-- Everything else - names, argument order, semantics - mirrors
 -- @Database.PostgreSQL.LibPQ@.
 --
 -- * Connection acquisition lives in t'Adapter': @connectdb@, @connectStart@
@@ -28,7 +27,7 @@
 --   @exec connection sql@ selects a field and applies it.
 --
 -- * @Oid@ is 'Word32'; @Row@, @Column@, @LoFd@ are 'Int32'. No @invalidOid@
---   constant — it is @0@.
+--   constant - it is @0@.
 --
 -- * @libpqVersion@ is omitted.
 module Pqi
@@ -477,8 +476,8 @@ data Connection = Connection
 --
 -- This is the only value that identifies an adapter: t'Connection', t'Result'
 -- and t'Cancel' say nothing about which adapter produced them. Callers that
--- must stay adapter-agnostic — a differential test harness, a library letting
--- its users pick a driver at runtime — pass an t'Adapter' around instead of a
+-- must stay adapter-agnostic - a differential test harness, a library letting
+-- its users pick a driver at runtime - pass an t'Adapter' around instead of a
 -- family of adapter-qualified top-level functions.
 data Adapter = Adapter
   { -- | A short identifier for the adapter (e.g. @\"pqi-ffi\"@), for use in
