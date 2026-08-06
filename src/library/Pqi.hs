@@ -218,9 +218,9 @@ data CopyOutResult
 
 -- | An asynchronous notification, as returned by 'notifies'.
 data Notify = Notify
-  { relname :: ByteString,
-    bePid :: Int32,
-    extra :: ByteString
+  { notifyRelname :: ByteString,
+    notifyBePid :: Int32,
+    notifyExtra :: ByteString
   }
   deriving stock (Eq, Ord, Show)
 
