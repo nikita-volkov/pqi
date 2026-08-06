@@ -1,50 +1,36 @@
--- | A driver-agnostic reproduction of the [@postgresql-libpq@](https://hackage.haskell.org/package/postgresql-libpq) API (version
--- @0.11@, the pipelining-capable release).
+-- | A driver-agnostic reproduction of the [@postgresql-libpq@](https://hackage.haskell.org/package/postgresql-libpq) @0.11@ API
+-- (the pipelining-capable release).
 --
--- The interface is reified as plain records of closures: a 'Connection',
--- the 'Result's and 'Cancel's it produces (via its 'exec', 'getResult',
--- 'getCancel', etc. fields), and an 'Adapter' that knows how to establish
--- connections. There is exactly one of each of these types in the whole
--- package — no type-level indirection and no polymorphism over drivers.
+-- t'Connection', t'Result' and t'Cancel' are records of @IO@ closures, each
+-- already closed over the handle it needs (a C @PGconn@ pointer, a native
+-- socket, ...). Exactly one of each type exists in the package: no classes,
+-- no type parameters.
 --
--- Each field of these records is a closure that has already captured
--- whatever underlying handle (e.g. a C @PGconn@ pointer, or a native
--- socket) it needs; from the caller's perspective a 'Connection' is simply
--- a bundle of @IO@ actions — a concrete, monomorphic value that can be
--- passed around and stored like any other.
+-- Connections come from adapter packages — @pqi-ffi@ (C @libpq@ via
+-- @postgresql-libpq@) and @pqi-native@ (pure-Haskell wire protocol) — each
+-- exporting one top-level t'Adapter' value. An adapter must be byte-identical
+-- to @libpq@ on every protocol-derived value; @pqi-conformance@ enforces that
+-- differentially.
 --
--- This package ships only the interface; it constructs no connections of
--- its own, since there is nothing for a 'Connection' to close over until an
--- adapter supplies a handle. That is the job of adapter packages (e.g.
--- @pqi-ffi@, @pqi-native@), each of which exports a single top-level
--- 'Adapter' value bundling its connection-establishing functions, so that
--- callers who need to remain adapter-agnostic (e.g. a differential test
--- harness, or a consumer that lets its own users pick an adapter) can hold
--- onto one value rather than a family of adapter-qualified functions.
+-- == Differences from @postgresql-libpq@
 --
--- Adapters mirror @libpq@ in semantics, not just in shape: a compliant
--- adapter must produce byte-identical output to @libpq@ for all
--- protocol-derived values. That contract is enforced by @pqi-conformance@,
--- which runs every operation differentially against @postgresql-libpq@ and
--- asserts equality.
+-- Everything else — names, argument order, semantics — mirrors
+-- @Database.PostgreSQL.LibPQ@.
 --
--- Function names, argument order, and semantics mirror the API of the C library binding
--- @postgresql-libpq@.
--- The only deliberate departures are:
+-- * Connection acquisition lives in t'Adapter': @connectdb@, @connectStart@
+--   and @newNullConnection@ are its fields, not top-level functions.
 --
--- * @Connection@, @Result@, and @Cancel@ are plain records of closures
---   rather than opaque handles operated on by top-level functions.
+-- * @unescapeBytea@ is an t'Adapter' field too. It takes no connection, but
+--   its implementation is adapter-specific.
 --
--- * OIDs are a plain 'Word32' and row\/column\/parameter indices and LoFds are a
---   plain 'Int32', rather than the C-specific newtypes of the original.
+-- * t'Connection', t'Result' and t'Cancel' are records of closures rather than
+--   opaque handles fed to top-level functions. Call sites are unchanged:
+--   @exec connection sql@ selects a field and applies it.
 --
--- * Ambiguous, rarely-useful helpers (e.g. @resStatus@) are omitted,
---   @libpqVersion@ is omitted too.
+-- * @Oid@ is 'Word32'; @Row@, @Column@, @LoFd@ are 'Int32'. No @invalidOid@
+--   constant — it is @0@.
 --
--- * There's no @invalidOid@ constant. It's just 0.
---
--- * @unescapeBytea@ is a field of 'Adapter' rather than a connection-independent
---   top-level function, since its implementation is adapter-specific.
+-- * @resStatus@ and @libpqVersion@ are omitted.
 module Pqi
   ( -- * Adapter
     Adapter (..),
@@ -117,17 +103,17 @@ data ExecStatus
     NonfatalError
   | -- | A fatal error occurred.
     FatalError
-  | -- | The @'Result'@ contains a single result tuple from the current command.
+  | -- | The t'Result' contains a single result tuple from the current command.
     -- This status occurs only when single-row mode has been selected for the
     -- query.
     SingleTuple
-  | -- | The @'Result'@ represents a synchronization point in pipeline mode,
-    -- requested by @'pipelineSync'@. This status occurs only in pipeline mode.
+  | -- | The t'Result' represents a synchronization point in pipeline mode,
+    -- requested by 'pipelineSync'. This status occurs only in pipeline mode.
     PipelineSync
-  | -- | The @'Result'@ represents a pipeline that has received an error from
-    -- the server. @'getResult'@ must be called repeatedly, and each time it will
+  | -- | The t'Result' represents a pipeline that has received an error from
+    -- the server. 'getResult' must be called repeatedly, and each time it will
     -- return this status code until the end of the current pipeline, at which
-    -- point it will return @'PipelineSync'@ and normal processing can resume.
+    -- point it will return 'PipelineSync' and normal processing can resume.
     PipelineAbort
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
@@ -241,24 +227,22 @@ data Notify = Notify
 
 -- * Result inspection
 
--- | Result-accessor closures, independent of the connection that produced
--- the result. This allows row decoders and projection functions to operate
--- on any result value without knowing the originating connection or
--- adapter.
+-- | Result-accessor closures, closed over an adapter's own result
+-- representation (e.g. a C @PGresult@ pointer).
 --
--- Adapters construct values of this type by closing each field over their
--- own underlying result representation (e.g. a C @PGresult@ pointer).
+-- Carries no reference to the connection that produced it, so decoders can
+-- consume a result without knowing its origin.
 data Result = Result
   { -- | The status of the result.
     resultStatus :: IO ExecStatus,
-    -- | The flat error message associated with the result, if any. Best-effort;
-    -- see the note on 'errorMessage'.
+    -- | The flat error message of the result, if any. Formatted locally by the
+    -- driver, so adapters are not expected to agree byte for byte; use
+    -- 'resultErrorField' where exactness matters.
     resultErrorMessage :: IO (Maybe ByteString),
     -- | A single structured field of the result's error report.
     resultErrorField :: FieldCode -> IO (Maybe ByteString),
-    -- | Free the result. Adapters that manage results with the garbage collector
-    -- may implement this as a no-op; for the C-backed adapter it frees the
-    -- underlying @PGresult@, after which the result must not be used.
+    -- | Free the result, after which it must not be used. A no-op in adapters
+    -- that leave results to the garbage collector.
     unsafeFreeResult :: IO (),
     -- | Number of rows (tuples) in the result.
     ntuples :: IO Int32,
@@ -282,13 +266,10 @@ data Result = Result
     -- | Server-side storage size of the given column's type, or a negative value
     -- for variable size.
     fsize :: Int32 -> IO Int,
-    -- | Value at @(row, column)@, or @'Nothing'@ for SQL @NULL@. The bytes are
-    -- not guaranteed to outlive the result: an adapter may return a view into
-    -- the result's own storage, which 'unsafeFreeResult' invalidates. Use
-    -- 'getvalue'' when the value has to outlive the result.
+    -- | Value at @(row, column)@, or 'Nothing' for SQL @NULL@. May alias the
+    -- result's storage, which 'unsafeFreeResult' invalidates.
     getvalue :: Int32 -> Int32 -> IO (Maybe ByteString),
-    -- | Like 'getvalue', but always returns a copy that remains valid after the
-    -- result is freed.
+    -- | Like 'getvalue', but always a copy, valid after the result is freed.
     getvalue' :: Int32 -> Int32 -> IO (Maybe ByteString),
     -- | Whether the value at @(row, column)@ is SQL @NULL@.
     getisnull :: Int32 -> Int32 -> IO Bool,
@@ -308,10 +289,7 @@ data Result = Result
 -- * Cancellation
 
 -- | A cancellation handle, isolated from the connection that produced it,
--- and thus usable from another thread while that connection is busy.
---
--- Adapters construct values of this type by closing over their own
--- underlying cancellation handle.
+-- hence usable from another thread while that connection is busy.
 data Cancel = Cancel
   { -- | Request cancellation of the in-progress command via the handle.
     cancel :: IO (Either ByteString ())
@@ -319,17 +297,13 @@ data Cancel = Cancel
 
 -- * Connection
 
--- | The single flat capability record: closing, inspecting, querying,
--- escaping, async commands, pipelining, cancellation handle creation,
--- notifications, copy, large objects, and control.
+-- | One flat capability record: closing, inspecting, querying, escaping,
+-- async commands, pipelining, cancellation handles, notifications, copy,
+-- large objects, control.
 --
--- Adapter packages (e.g. @pqi-ffi@, @pqi-native@) construct values of this
--- type via the 'connectdb'\/'connectStart' fields of their 'Adapter',
--- closing each field over their own underlying connection representation
--- (e.g. a C @PGconn@ pointer, or a native socket). This module only
--- defines the shape; it does not construct any connections.
---
--- See the field-level documentation for the semantics of each capability.
+-- Produced by the 'connectdb'\/'connectStart'\/'newNullConnection' fields of
+-- an t'Adapter', which close each field over their own connection
+-- representation (a C @PGconn@ pointer, a native socket, ...).
 data Connection = Connection
   { -- | Drive an asynchronous connection attempt forward.
     connectPoll :: IO PollingStatus,
@@ -365,11 +339,8 @@ data Connection = Connection
     protocolVersion :: IO Int,
     -- | The server version, as an integer of the form @MMmmpp@.
     serverVersion :: IO Int,
-    -- | The most recent error message, if any.
-    --
-    -- Note: unlike the structured fields available via @'resultErrorField'@, the
-    -- flat message text is formatted locally by the driver, so adapters are not
-    -- expected to produce byte-identical strings.
+    -- | The most recent error message, if any. Formatted locally by the driver,
+    -- so adapters are not expected to agree byte for byte.
     errorMessage :: IO (Maybe ByteString),
     -- | The file descriptor of the connection socket.
     socket :: IO (Maybe Fd),
@@ -383,18 +354,18 @@ data Connection = Connection
     -- | Submit a command and wait for the result.
     exec :: ByteString -> IO (Maybe Result),
     -- | Submit a parameterized command. Each parameter is given as
-    -- @(type oid, value, format)@, or @'Nothing'@ for SQL @NULL@. The final
-    -- @'Format'@ selects the result format.
+    -- @(type oid, value, format)@, or 'Nothing' for SQL @NULL@. The final
+    -- 'Format' selects the result format.
     execParams ::
       ByteString ->
       [Maybe (Word32, ByteString, Format)] ->
       Format ->
       IO (Maybe Result),
     -- | Prepare a named statement. The OID list, when supplied, fixes parameter
-    -- types; @'Nothing'@ leaves them to be inferred.
+    -- types; 'Nothing' leaves them to be inferred.
     prepare :: ByteString -> ByteString -> Maybe [Word32] -> IO (Maybe Result),
     -- | Execute a previously prepared statement. Each parameter is
-    -- @(value, format)@, or @'Nothing'@ for SQL @NULL@.
+    -- @(value, format)@, or 'Nothing' for SQL @NULL@.
     execPrepared ::
       ByteString ->
       [Maybe (ByteString, Format)] ->
@@ -413,21 +384,21 @@ data Connection = Connection
     escapeIdentifier :: ByteString -> IO (Maybe ByteString),
     -- | Submit a command without waiting for the result.
     sendQuery :: ByteString -> IO Bool,
-    -- | Asynchronous @'execParams'@.
+    -- | Asynchronous 'execParams'.
     sendQueryParams :: ByteString -> [Maybe (Word32, ByteString, Format)] -> Format -> IO Bool,
-    -- | Asynchronous @'prepare'@.
+    -- | Asynchronous 'prepare'.
     sendPrepare :: ByteString -> ByteString -> Maybe [Word32] -> IO Bool,
-    -- | Asynchronous @'execPrepared'@.
+    -- | Asynchronous 'execPrepared'.
     sendQueryPrepared :: ByteString -> [Maybe (ByteString, Format)] -> Format -> IO Bool,
-    -- | Asynchronous @'describePrepared'@.
+    -- | Asynchronous 'describePrepared'.
     sendDescribePrepared :: ByteString -> IO Bool,
-    -- | Asynchronous @'describePortal'@.
+    -- | Asynchronous 'describePortal'.
     sendDescribePortal :: ByteString -> IO Bool,
     -- | Collect the next result from an asynchronous command.
     getResult :: IO (Maybe Result),
     -- | Read input from the server into the driver's buffer.
     consumeInput :: IO Bool,
-    -- | Whether a command is busy (a @'getResult'@ would block).
+    -- | Whether a command is busy (a 'getResult' would block).
     isBusy :: IO Bool,
     -- | Set the non-blocking flag of the connection.
     setnonblocking :: Bool -> IO Bool,
@@ -451,17 +422,17 @@ data Connection = Connection
     getCancel :: IO (Maybe Cancel),
     -- | Return the next notification from the queue, if any.
     notifies :: IO (Maybe Notify),
-    -- | Stop accumulating notices for retrieval via @'getNotice'@.
+    -- | Stop accumulating notices for retrieval via 'getNotice'.
     disableNoticeReporting :: IO (),
-    -- | Start accumulating notices for retrieval via @'getNotice'@.
+    -- | Start accumulating notices for retrieval via 'getNotice'.
     enableNoticeReporting :: IO (),
     -- | Retrieve the next accumulated notice, if any.
     getNotice :: IO (Maybe ByteString),
     -- | Send data on a @COPY FROM STDIN@ connection.
     putCopyData :: ByteString -> IO CopyInResult,
-    -- | Signal the end of @COPY FROM STDIN@; @'Just'@ aborts with the given error.
+    -- | Signal the end of @COPY FROM STDIN@; 'Just' aborts with the given error.
     putCopyEnd :: Maybe ByteString -> IO CopyInResult,
-    -- | Receive data on a @COPY TO STDOUT@ connection. The @'Bool'@ selects
+    -- | Receive data on a @COPY TO STDOUT@ connection. The 'Bool' selects
     -- non-blocking mode.
     getCopyData :: Bool -> IO CopyOutResult,
     -- | Create a new large object.
@@ -501,20 +472,14 @@ data Connection = Connection
 -- * Adapter
 
 -- | An adapter package's connection-establishing functions, bundled into one
--- value.
+-- value. Each adapter package (e.g. @pqi-ffi@, @pqi-native@) exports exactly
+-- one value of this type, conventionally named @adapter@.
 --
--- 'Connection', 'Result', and 'Cancel' are per-connection and per-result;
--- they carry no information about which adapter produced them, so they
--- cannot themselves stand in for "the FFI adapter" or "the native adapter".
--- 'Adapter' fills that gap: it is the one value that names an adapter and
--- knows how to bring a 'Connection' into being, so a caller that must remain
--- adapter-agnostic (a differential test harness comparing two adapters, or a
--- library that lets its users pick an adapter at runtime) can hold onto a
--- single 'Adapter' value instead of a family of adapter-qualified top-level
--- functions.
---
--- Each adapter package (e.g. @pqi-ffi@, @pqi-native@) exports exactly one
--- top-level value of this type, conventionally named @adapter@.
+-- This is the only value that identifies an adapter: t'Connection', t'Result'
+-- and t'Cancel' say nothing about which adapter produced them. Callers that
+-- must stay adapter-agnostic — a differential test harness, a library letting
+-- its users pick a driver at runtime — pass an t'Adapter' around instead of a
+-- family of adapter-qualified top-level functions.
 data Adapter = Adapter
   { -- | A short identifier for the adapter (e.g. @\"pqi-ffi\"@), for use in
     -- test descriptions, logs, and error messages.
