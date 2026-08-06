@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: pqi
-version: 1.0.0.3
+version: 1.1.0.0
 category: Database, PostgreSQL
 synopsis: Driver-agnostic interface to the PostgreSQL libpq API
 description:
