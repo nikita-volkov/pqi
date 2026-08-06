@@ -9,10 +9,10 @@ description:
   instead of a single concrete type tied to @libpq@. This lets callers
   program against one interface and pick an adapter package to construct it:
 
-  * [@pqi-ffi@](https://hackage.haskell.org/package/pqi-ffi) — a thin adapter backed by the C @libpq@ library via
+  * [@pqi-ffi@](https://hackage.haskell.org/package/pqi-ffi) - a thin adapter backed by the C @libpq@ library via
     [@postgresql-libpq@](https://hackage.haskell.org/package/postgresql-libpq).
 
-  * [@pqi-native@](https://hackage.haskell.org/package/pqi-native) — a pure-Haskell adapter that speaks the PostgreSQL wire
+  * [@pqi-native@](https://hackage.haskell.org/package/pqi-native) - a pure-Haskell adapter that speaks the PostgreSQL wire
     protocol directly. __Alpha__, and fully interchangeable with @pqi-ffi@: switching between them
     is a one-line @Adapter@ change.
 

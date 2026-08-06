@@ -1,3 +1,7 @@
+# v1.0.0.3
+
+Doc corrections.
+
 # v1.0.0.2
 
 Release process fixes.
