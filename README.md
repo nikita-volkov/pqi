@@ -53,7 +53,7 @@ connection <- connectdb Pqi.Native.adapter settings
 
 ## Testing model
 
-`pqi` comes accompanied by a comprehensive conformance suite isolated into an implementation-agnostic `pqi-conformance` package that covers various edge-cases and error conditions and covers most operations with a precondition that they must behave in exactly the same way that `postgresql-libpq` does.
+`pqi` comes accompanied by a conformance suite isolated into an implementation-agnostic `pqi-conformance` package that covers various edge-cases and error conditions and covers most operations with a precondition that they must behave in exactly the same way that `postgresql-libpq` does.
 
 ## Interface
 

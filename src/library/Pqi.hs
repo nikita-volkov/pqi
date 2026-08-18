@@ -235,7 +235,7 @@ data Result = Result
   { -- | The status of the result.
     resultStatus :: IO ExecStatus,
     -- | The flat error message of the result, if any. Formatted locally by the
-    -- driver, so adapters are not expected to agree byte for byte; use
+    -- driver, so adapters are not expected to agree exactly; use
     -- 'resultErrorField' where exactness matters.
     resultErrorMessage :: IO (Maybe ByteString),
     -- | A single structured field of the result's error report.
@@ -339,7 +339,7 @@ data Connection = Connection
     -- | The server version, as an integer of the form @MMmmpp@.
     serverVersion :: IO Int,
     -- | The most recent error message, if any. Formatted locally by the driver,
-    -- so adapters are not expected to agree byte for byte.
+    -- so adapters are not expected to agree exactly.
     errorMessage :: IO (Maybe ByteString),
     -- | The file descriptor of the connection socket.
     socket :: IO (Maybe Fd),
