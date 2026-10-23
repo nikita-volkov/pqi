@@ -1,3 +1,7 @@
+# v1.1.0.2
+
+Doc corrections: the README describes `Connection`, `Result` and `Cancel` as records instead of an `IsConnection` class.
+
 # v1.1.0.1
 
 Doc corrections.
