@@ -9,7 +9,7 @@ A driver-agnostic interface to the PostgreSQL [libpq][libpq] API.
 
 | Package | Description |
 |---------|-------------|
-| **[pqi](https://github.com/nikita-volkov/pqi)** *(this)* | The interface: `IsConnection` class, shared types, and connection-independent helpers |
+| **[pqi](https://github.com/nikita-volkov/pqi)** *(this)* | The interface: the `Adapter`, `Connection`, `Result` and `Cancel` records, shared types, and connection-independent helpers |
 | [pqi-ffi](https://github.com/nikita-volkov/pqi-ffi) | FFI adapter backed by `postgresql-libpq` and the C `libpq` library. Battle-tested, production-safe |
 | [pqi-native](https://github.com/nikita-volkov/pqi-native) | Pure-Haskell adapter speaking the PostgreSQL wire protocol directly. No C dependency. Alpha - interchangeable with `pqi-ffi` |
 | [pqi-conformance](https://github.com/nikita-volkov/pqi-conformance) | Reusable `hspec` conformance suite that differentially tests any adapter against `postgresql-libpq` |
@@ -23,8 +23,8 @@ development machine, in CI, in production containers, on cross-compilation
 targets. There is no way to opt out.
 
 `pqi` solves this by separating the interface from the implementation. It
-defines a driver-agnostic type class (`IsConnection`) that mirrors the `libpq`
-API surface, then ships two adapters:
+defines a driver-agnostic `Connection` record (with `Result` and `Cancel`
+alongside it) that mirrors the `libpq` API surface, then ships two adapters:
 
 - [`pqi-ffi`](https://github.com/nikita-volkov/pqi-ffi) - a thin wrapper
   around `postgresql-libpq`. Battle-tested, production-safe. The default
